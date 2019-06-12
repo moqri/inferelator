@@ -27,8 +27,11 @@ class AMuSR_regression(base_regression.BaseRegression):
     X = None  # list(pd.DataFrame [N, K])
     Y = None  # list(pd.DataFrame [N, G])
     priors = None  # list(pd.DataFrame [G, K]) OR pd.DataFrame [G, K]
+
+    # Feature lists (combined for all tasks)
     tfs = None  # pd.Index OR list
     genes = None  # pd.Index OR list
+    # Feature lists (
 
     K = None  # int
     G = None  # int
@@ -47,25 +50,36 @@ class AMuSR_regression(base_regression.BaseRegression):
         :param remove_autoregulation: bool
         """
 
+        assert check.argument_type(X, list)
+        assert check.argument_type(Y, list)
+        assert check.argument_
+        assert check.argument_type(tfs, (list, pd.Series, pd.Index), allow_none=True)
+        assert check.argument_type(genes, (list, pd.Series, pd.Index), allow_none=True)
+        assert check.argument_numeric(prior_weight)
+        assert len(X) == len(Y)
+
         # Set the data into the regression object
-        self.X = X
-        self.Y = Y
+        self.X = scale_list_of_dataframes(X)
+        self.Y = scale_list_of_dataframes(Y)
         self.n_tasks = len(X)
 
         # Set the priors and weight into the regression object
         self.priors = priors
         self.prior_weight = float(prior_weight)
 
-        # Construct a list of TFs & genes if they are not passed in
-        if tfs is None or genes is None:
-            tfs, genes = [], []
-            for design, response in zip(X, Y):
-                tfs.append(design.columns)
-                genes.append(response.columns)
-            self.tfs = filter_genes_on_tasks(tfs, "intersection")
-            self.genes = filter_genes_on_tasks(genes, "intersection")
+        # Construct a list of regulators if they are not passed in from the union of the task regulators
+        if tfs is None:
+            tfs = [design.columns for design in X]
+            self.tfs = filter_genes_on_tasks(tfs, "union")
         else:
-            self.tfs, self.genes = tfs, genes
+            self.tfs = tfs
+
+        # Construct a list of genes if they are not passed in from the union of the task genes
+        if genes is None:
+            genes = [resp.columns for resp in Y]
+            self.genes = filter_genes_on_tasks(genes, "union")
+        else:
+            self.genes = genes
 
         # Set the regulators and targets into the regression object
         self.K, self.G = len(tfs), len(genes)
@@ -92,19 +106,16 @@ class AMuSR_regression(base_regression.BaseRegression):
             gene = self.genes[j]
             x, y, tasks = [], [], []
 
-            if self.remove_autoregulation:
-                tfs = [t for t in self.tfs if t != gene]
-            else:
-                tfs = self.tfs
-
             for k in range(self.n_tasks):
-                if gene in self.Y[k]:
-                    x.append(self.X[k].loc[:, tfs].values)  # list([N, K])
+                if self.Y[k].columns.contains(gene):
+                    task_tfs = list(self.X[k].columns.intersection(self.tfs))
+                    task_tfs = [t for t in task_tfs if t != gene] if self.remove_autoregulation else task_tfs
+                    x.append(self.X[k].loc[:, task_tfs])  # list([N, K])
                     y.append(self.Y[k].loc[:, gene].values.reshape(-1, 1))  # list([N, 1])
                     tasks.append(k)  # [T,]
 
             prior = format_prior(self.priors, gene, tasks, self.prior_weight)
-            return run_regression_EBIC(x, y, tfs, tasks, gene, prior)
+            return run_regression_EBIC(x, y, self.tfs, tasks, gene, prior)
 
         return MPControl.map(regression_maker, range(self.G))
 
@@ -136,7 +147,7 @@ def run_regression_EBIC(X, Y, TFs, tasks, gene, prior):
     """
     Run multitask regression
 
-    :param X: list(np.ndarray [N x K]) [T]
+    :param X: list(pd.DataFrames [N x K]) [T]
         List consisting of design matrixes for each task
     :param Y: list(np.ndarray [N x 1]) [T]
         List consisting of response matrixes for each task
@@ -154,16 +165,16 @@ def run_regression_EBIC(X, Y, TFs, tasks, gene, prior):
 
     assert check.argument_type(X, list)
     assert check.argument_type(Y, list)
-    assert check.argument_type(TFs, list)
+    assert check.argument_type(TFs, (list, pd.Series, pd.Index))
     assert check.argument_type(tasks, list)
     assert len(X) == len(Y)
     assert len(X) == len(tasks)
-    assert max([xk.shape[1] for xk in X]) == min([xk.shape[1] for xk in X])
+    assert len(X) > 0
     assert min([xk.shape[0] for xk in X]) > 0
     assert all([xk.shape[0] == yk.shape[0] for xk, yk in zip(X, Y)])
 
     n_tasks = len(X)  # The number of tasks
-    n_preds = X[0].shape[1]  # The number of predictors
+    n_preds = len(TFs)  # The number of predictors
     n_samples = [xk.shape[0] for xk in X]  # A list of the number of samples for each task
 
     # Set a grid search space for the lambda parameters
@@ -173,12 +184,8 @@ def run_regression_EBIC(X, Y, TFs, tasks, gene, prior):
     # Start with a default lambda B based on tasks, predictors, and samples
     lambda_B_param = np.sqrt((n_tasks * np.log(n_preds)) / np.mean(n_samples))
 
-    # Center and scale the data
-    X = scale_list_of_arrays(X)
-    Y = scale_list_of_arrays(Y)
-
     # Calculate covariances
-    cov_C, cov_D = _covariance_by_task(X, Y)
+    cov_C, cov_D = _covariance_by_task(align_list_of_dataframes(X, TFs), Y)
 
     # Create empty block and sparse matrixes
     sparse_matrix = np.zeros((n_preds, n_tasks))
@@ -192,8 +199,13 @@ def run_regression_EBIC(X, Y, TFs, tasks, gene, prior):
     for c, s in itertools.product(Cs, Ss):
         lambda_B_tmp = c * lambda_B_param
         lambda_S_tmp = s * lambda_B_tmp
-        combined_weights, sparse_matrix, block_matrix = amusr_fit(X, Y, lambda_B_tmp, lambda_S_tmp, cov_C, cov_D,
+        combined_weights, sparse_matrix, block_matrix = amusr_fit(cov_C, cov_D, lambda_B_tmp, lambda_S_tmp,
                                                                   sparse_matrix, block_matrix, prior)
+
+        # Recast combined weights as a dataframe
+        combined_weights = pd.DataFrame(combined_weights, index=TFs)
+
+        # Calculate eBIC score and keep this model if it's the top performer so far
         ebic_score = ebic(X, Y, combined_weights, n_tasks, n_samples, n_preds)
         if ebic_score < min_ebic:
             model_output = combined_weights
@@ -204,15 +216,14 @@ def run_regression_EBIC(X, Y, TFs, tasks, gene, prior):
 
     if model_output is not None:
         for kx, k in enumerate(tasks):
-            nonzero = model_output[:, kx] != 0
-            if nonzero.sum() > 0:
-                included_tfs = np.asarray(TFs)[nonzero]
-                output[k] = _final_weights(X[kx][:, nonzero], Y[kx], included_tfs, gene)
+            nonzero_tfs = model_output.index[model_output.iloc[:, kx] != 0]
+            if len(nonzero_tfs) > 0:
+                output[k] = _final_weights(X[kx].loc[:, nonzero_tfs].values, Y[kx], list(nonzero_tfs), gene)
 
     return output
 
 
-def amusr_fit(X, Y, lambda_B=0., lambda_S=0., cov_C=None, cov_D=None, sparse_matrix=None, block_matrix=None, prior=None,
+def amusr_fit(cov_C, cov_D, lambda_B=0., lambda_S=0., sparse_matrix=None, block_matrix=None, prior=None,
               max_iter=MAX_ITER, tol=TOL, min_weight=MIN_WEIGHT_VAL):
     """
     Fits regression model in which the weights matrix W (predictors x tasks)
@@ -220,18 +231,14 @@ def amusr_fit(X, Y, lambda_B=0., lambda_S=0., cov_C=None, cov_D=None, sparse_mat
     and S that allows for the differences.
     reference: Jalali et al., NIPS 2010. A Dirty Model for Multi-task Learning.
 
-    :param X: list(np.ndarray [N x K]) [T]
-        List of design values for each task. Must be aligned on the feature (K) axis.
-    :param Y: list(np.ndarray [N x 1]) [T]
-        List of response values for each task
-    :param lambda_B: float
-        Penalty coefficient for the block matrix
-    :param lambda_S: float
-        Penalty coefficient for the sparse matrix
     :param cov_C: np.ndarray [T x K]
         Covariance of the predictors K to the response gene by task
     :param cov_D: np.ndarray [T x K x K]
         Covariance of the predictors K to K by task
+    :param lambda_B: float
+        Penalty coefficient for the block matrix
+    :param lambda_S: float
+        Penalty coefficient for the sparse matrix
     :param sparse_matrix: np.ndarray [K x T]
         Matrix of model coefficients for each predictor by each task that are unique to each task
     :param block_matrix: np.ndarray [K x T]
@@ -253,25 +260,17 @@ def amusr_fit(X, Y, lambda_B=0., lambda_S=0., cov_C=None, cov_D=None, sparse_mat
         Matrix of model coefficients for each predictor by each task that are shared between each task
     """
 
-    assert check.argument_type(X, list)
-    assert check.argument_type(Y, list)
     assert check.argument_type(lambda_B, (float, int))
     assert check.argument_type(lambda_S, (float, int))
     assert check.argument_type(max_iter, int)
     assert check.argument_type(tol, float)
     assert check.argument_type(min_weight, float)
-    assert len(X) == len(Y)
-    assert max([xk.shape[1] for xk in X]) == min([xk.shape[1] for xk in X])
-
-    n_tasks = len(X)
-    n_features = max([xk.shape[1] for xk in X])
-
-    # calculate covariance update terms if not provided
-    if cov_C is None or cov_D is None:
-        cov_C, cov_D = _covariance_by_task(X, Y)
-
     assert cov_C.shape[0] == cov_D.shape[0]
     assert cov_C.shape[1] == cov_D.shape[1]
+    assert cov_D.shape[1] == cov_D.shape[2]
+
+    n_tasks = cov_C.shape[0]
+    n_features = cov_C.shape[1]
 
     # if S and B are provided -- warm starts -- will run faster
     if sparse_matrix is None or block_matrix is None:
@@ -316,6 +315,41 @@ def scale_list_of_arrays(X):
     assert check.argument_type(X, list)
 
     return [StandardScaler().fit_transform(xk.astype(float)) for xk in X]
+
+
+def scale_list_of_dataframes(X):
+    """
+    Scale a list of data frames so that each has mean 0 and unit variance
+    :param X: list(pd.DataFrame) [T]
+    :return X: list(pd.DataFrame) [T]
+    """
+
+    assert check.argument_type(X, list)
+    for xk, x in enumerate(X):
+        X[xk][x.columns] = StandardScaler().fit_transform(x.values.astype(float))
+    return X
+
+
+def align_list_of_dataframes(X, labels, axis=1, fill_value=0):
+    """
+    Align a list of arrays on a given axis to a set of labels by filling in anything missing with 0s
+    :param X: list(pd.DataFrame) [T]
+        List of pandas data frames
+    :param labels: list [k]
+        List of labels
+    :param axis: int
+        Axis to align
+    :param fill_value: numeric
+        Value to fill columns with if there's no label present
+    :return X: list(pd.DataFrame) [T]
+        List of DataFrames
+    """
+    assert check.argument_type(X, list)
+    assert check.argument_type(X[0], pd.DataFrame)
+    assert check.argument_type(labels, (list, pd.Series, pd.Index))
+    assert check.argument_numeric(axis, low=0, high=1)
+
+    return [xk.reindex(labels, axis=axis).fillna(fill_value) for xk in X]
 
 
 def _covariance_by_task(X, Y):
@@ -493,26 +527,23 @@ def _update_block(cov_C, cov_D, block_matrix, sparse_matrix, lambda_B):
     return block_matrix
 
 
-def sum_squared_errors(X, Y, betas, task_id):
+def sum_squared_errors(X, Y, betas):
     """
     Get RSS for a particular task 'k'
-    :param X: list(np.ndarray [N x K]) [T]
-        List consisting of design matrixes for each task
-    :param Y: list(np.ndarray [N x 1]) [T]
-        List consisting of response matrixes for each task
-    :param betas: np.ndarray [K x T]
-        Fit model coefficients for each task
-    :param task_id: int
-        Task ID
+    :param X: np.ndarray [N x K]
+        Design matrix for a task
+    :param Y: np.ndarray [N x 1]
+        Response matrix for a task
+    :param betas: np.ndarray [K x 1]
+        Fit model coefficients for a task
     :return:
     """
 
-    assert check.argument_type(X, list)
-    assert check.argument_type(Y, list)
+    assert check.argument_type(X, np.ndarray)
+    assert check.argument_type(Y, np.ndarray)
     assert check.argument_type(betas, np.ndarray)
-    assert check.argument_type(task_id, int)
 
-    return np.sum((Y[task_id].T - np.dot(X[task_id], betas[:, task_id])) ** 2)
+    return np.sum((Y.T - np.dot(X, betas)) ** 2)
 
 
 def ebic(X, Y, model_weights, n_tasks, n_samples, n_preds, gamma=1, min_rss=MIN_RSS):
@@ -522,11 +553,11 @@ def ebic(X, Y, model_weights, n_tasks, n_samples, n_preds, gamma=1, min_rss=MIN_
     Extended Bayesian information criteria for model selection with large model spaces
     https://doi.org/10.1093/biomet/asn034
 
-    :param X: list(np.ndarray [N x K]) [T]
+    :param X: list(pd.DataFrame [N x K]) [T]
         List consisting of design matrixes for each task
     :param Y: list(np.ndarray [N x 1]) [T]
         List consisting of response matrixes for each task
-    :param model_weights: np.ndarray [K x T]
+    :param model_weights: pd.DataFrame [K x T]
         Fit model coefficients for each task
     :param n_tasks: int
         Number of tasks T
@@ -544,7 +575,7 @@ def ebic(X, Y, model_weights, n_tasks, n_samples, n_preds, gamma=1, min_rss=MIN_
 
     assert check.argument_type(X, list)
     assert check.argument_type(Y, list)
-    assert check.argument_type(model_weights, np.ndarray)
+    assert check.argument_type(model_weights, pd.DataFrame)
     assert check.argument_type(n_tasks, int)
     assert check.argument_type(n_samples, list)
     assert check.argument_type(n_preds, int)
@@ -557,12 +588,13 @@ def ebic(X, Y, model_weights, n_tasks, n_samples, n_preds, gamma=1, min_rss=MIN_
     for task_id in range(n_tasks):
         # Get the number of samples for this task
         task_samples = n_samples[task_id]
+        task_model = model_weights.iloc[:, task_id]
 
         # Find the number of non-zero predictors
-        nonzero_pred = (model_weights[:, task_id] != 0).sum()
+        nonzero_pred = (task_model != 0).sum()
 
-        # Calculate RSS for the model
-        rss = sum_squared_errors(X, Y, model_weights, task_id)
+        # Calculate RSS for the task model
+        rss = sum_squared_errors(X[task_id].values, Y[task_id], task_model.loc[X[task_id].columns].values)
 
         # Calculate bayes information criterion using likelihood = RSS / n
         # Calculate the first component of BIC with a non-zero floor for RSS (so BIC is always finite)
