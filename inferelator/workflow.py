@@ -232,6 +232,10 @@ class WorkflowBaseLoader(object):
         file_name = self._get_file_name_from_attribute(file_name)
         if file_name is None:
             return
+        if '.h5' in file_name:
+            self.src_type = 'hdf5'
+        else:
+            self.src_type = 'tsv'
 
         self._file_format_settings[file_name].update(kwargs)
         self.print_file_loading_arguments(file_name)
@@ -353,9 +357,14 @@ class WorkflowBaseLoader(object):
             file_settings = copy.copy(DEFAULT_PANDAS_TSV_SETTINGS)
 
         file_settings.update(kwargs)
-
-        # Load a dataframe
-        return pd.read_csv(self.input_path(filename), **file_settings)
+        # Allow for Hdf5 file formats to be read in
+        if self.src_type == 'hdf5':
+            hstore = pd.HDFStore(self.input_path(filename), mode='r')
+            hdset = hstore.keys()[0]
+            return hstore[hdset]
+        else:
+            # Load a dataframe
+            return pd.read_csv(self.input_path(filename), **file_settings)
 
     def append_to_path(self, var_name, to_append):
         """
