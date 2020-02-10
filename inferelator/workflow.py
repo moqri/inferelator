@@ -358,7 +358,7 @@ class WorkflowBaseLoader(object):
 
         file_settings.update(kwargs)
         # Allow for Hdf5 file formats to be read in
-        if self.src_type == 'hdf5':
+        if hasattr(self, 'src_type') and self.src_type == 'hdf5':
             hstore = pd.HDFStore(self.input_path(filename), mode='r')
             hdset = hstore.keys()[0]
             return hstore[hdset]
