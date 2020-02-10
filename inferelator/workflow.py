@@ -162,6 +162,11 @@ class WorkflowBaseLoader(object):
         self._set_file_name("priors_file", priors_file)
         self._set_file_name("gold_standard_file", gold_standard_file)
         self._set_file_name("gene_metadata_file", gene_metadata_file)
+        if expression_matrix_file is not None:
+            if '.h5' in expression_matrix_file:
+                self.emf_type = 'hdf5'
+            else:
+                self.emf_type = 'tsv'
 
     def set_file_properties(self, extract_metadata_from_expression_matrix=None, expression_matrix_metadata=None,
                             expression_matrix_columns_are_genes=None, gene_list_index=None, metadata_handler=None):
@@ -232,10 +237,6 @@ class WorkflowBaseLoader(object):
         file_name = self._get_file_name_from_attribute(file_name)
         if file_name is None:
             return
-        if '.h5' in file_name:
-            self.src_type = 'hdf5'
-        else:
-            self.src_type = 'tsv'
 
         self._file_format_settings[file_name].update(kwargs)
         self.print_file_loading_arguments(file_name)
@@ -358,7 +359,7 @@ class WorkflowBaseLoader(object):
 
         file_settings.update(kwargs)
         # Allow for Hdf5 file formats to be read in
-        if hasattr(self, 'src_type') and self.src_type == 'hdf5':
+        if hasattr(self, 'emf_type') and self.emf_type == 'hdf5':
             hstore = pd.HDFStore(self.input_path(filename), mode='r')
             hdset = hstore.keys()[0]
             return hstore[hdset]
