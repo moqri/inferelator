@@ -345,7 +345,7 @@ class WorkflowBaseLoader(object):
             self.expression_matrix = utils.transpose_dataframe(self.expression_matrix)
             utils.Debug.vprint("Transposing expression matrix to {sh}".format(sh=self.expression_matrix.shape), level=2)
 
-    def input_dataframe(self, filename, **kwargs):
+    def input_dataframe(self, filename, intent=None, **kwargs):
         """
         Read a file in as a pandas dataframe
         """
@@ -359,7 +359,7 @@ class WorkflowBaseLoader(object):
 
         file_settings.update(kwargs)
         # Allow for Hdf5 file formats to be read in
-        if hasattr(self, 'emf_type') and self.emf_type == 'hdf5':
+        if intent == 'emf' and hasattr(self, 'emf_type') and self.emf_type == 'hdf5':
             hstore = pd.HDFStore(self.input_path(filename), mode='r')
             hdset = hstore.keys()[0]
             return hstore[hdset]
@@ -389,7 +389,7 @@ class WorkflowBaseLoader(object):
         """
         file = file if file is not None else self.expression_matrix_file
         utils.Debug.vprint("Loading expression data file {file}".format(file=file), level=1)
-        self.expression_matrix = self.input_dataframe(file)
+        self.expression_matrix = self.input_dataframe(file, intent='emf')
 
         try:
             check.dataframe_is_finite(self.expression_matrix)
