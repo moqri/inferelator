@@ -121,7 +121,7 @@ class TestWorkflowSetParameters(unittest.TestCase):
 
     def test_input_dataframe(self):
         expression_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "dream4")
-        output = self.workflow.input_dataframe(os.path.join(expression_path, "expression.h5"), intent="emf")
+        output = self.workflow.input_dataframe(os.path.join(expression_path, "expression.h5"))
         self.assertTrue(isinstance(output, pd.DataFrame))
 
 class TestWorkflowLoadData(unittest.TestCase):
