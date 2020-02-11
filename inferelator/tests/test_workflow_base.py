@@ -118,6 +118,10 @@ class TestWorkflowSetParameters(unittest.TestCase):
             self.workflow.set_postprocessing_parameters(gold_standard_filter_method="red", metric="blue")
         self.assertListEqual([self.workflow.gold_standard_filter_method, self.workflow.metric], ["red", "blue"])
 
+    def test_input_dataframe(self):
+
+        self.assertEqual(self.workflow.input_dataframe("expression.h5"), "expression.h5")
+
 
 class TestWorkflowLoadData(unittest.TestCase):
 
