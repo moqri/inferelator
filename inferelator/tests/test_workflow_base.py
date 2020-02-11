@@ -17,6 +17,7 @@ from inferelator.regression.base_regression import RegressionWorkflow
 from inferelator.distributed.inferelator_mp import MPControl
 from inferelator.preprocessing.metadata_parser import MetadataParserBranching
 
+
 PYTHON2_FLAG = sys.version_info[0] == 2
 my_dir = os.path.dirname(__file__)
 
@@ -119,9 +120,9 @@ class TestWorkflowSetParameters(unittest.TestCase):
         self.assertListEqual([self.workflow.gold_standard_filter_method, self.workflow.metric], ["red", "blue"])
 
     def test_input_dataframe(self):
-
-        self.assertEqual(self.workflow.input_dataframe("expression.h5"), "expression.h5")
-
+        expression_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "dream4")
+        output = self.workflow.input_dataframe(os.path.join(expression_path, "expression.h5"), intent="emf")
+        self.assertTrue(isinstance(output, pd.DataFrame))
 
 class TestWorkflowLoadData(unittest.TestCase):
 
